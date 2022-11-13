@@ -16,6 +16,9 @@
   "files": [
     "build"
   ],
+  "bin": {
+    "insta-who-unfollowed-me": "./build/index.js"
+  },
   "keywords": [
     "instagram",
     "unfollowed",
