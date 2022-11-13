@@ -1,8 +1,6 @@
-import 'dotenv/config'; // To use our .env
-import { sayHello } from './hello';
+#! /usr/bin/env node
+import { runCommand } from './cli';
 
-async function main() {
-  sayHello();
+if (require.main === module) {
+  runCommand();
 }
-
-main();

@@ -1,50 +1,59 @@
 {
-  "name": "typescript-swc-starter",
+  "name": "insta-who-unfollowed-me",
   "version": "1.0.0",
   "author": "maxgfr",
   "license": "MIT",
-  "description": "A minimalist typescript swc starter",
+  "description": "Utility to make it easy to track unfollowers on Instagram",
   "main": "./build/index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/maxgfr/typescript-swc-starter.git"
+    "url": "https://github.com/maxgfr/insta-who-unfollowed-me.git"
   },
   "bugs": {
-    "url": "https://github.com/maxgfr/typescript-swc-starter/issues"
+    "url": "https://github.com/maxgfr/insta-who-unfollowed-me/issues"
   },
-  "homepage": "https://github.com/maxgfr/typescript-swc-starter#readme",
+  "homepage": "https://github.com/maxgfr/insta-who-unfollowed-me#readme",
   "files": [
     "build"
   ],
   "keywords": [
-    "boilerplate",
-    "typescript",
-    "swc"
+    "instagram",
+    "unfollowed",
+    "unfollowers"
   ],
   "scripts": {
     "start": "node build/index.js",
     "dev": "nodemon",
     "develop": "node -r @swc-node/register ./src/index.ts",
-    "test": "DOTENV_CONFIG_PATH=.env.test jest",
-    "test:watch": "DOTENV_CONFIG_PATH=.env.test jest --watch",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch --passWithNoTests",
     "clean": "rimraf build",
     "build": "tsc -p tsconfig.build.json",
     "build:watch": "tsc -w -p tsconfig.build.json",
     "build:swc": "swc ./src -d build",
     "build:swc:watch": "swc ./src -d build -w",
     "lint": "eslint ./src --ext .ts",
-    "prettier": "prettier --write './src/**/*.{ts,js,json}'"
+    "prettier": "prettier --write './src/**/*.{ts,js,json}'",
+    "release": "semantic-release"
   },
   "dependencies": {
-    "dotenv": "16.0.3"
+    "commander": "^9.4.1",
+    "instagram-private-api": "^1.45.3",
+    "prompts": "^2.4.2"
   },
   "devDependencies": {
+    "@semantic-release/commit-analyzer": "^9.0.2",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^8.0.6",
+    "@semantic-release/npm": "^9.0.1",
+    "@semantic-release/release-notes-generator": "^10.0.3",
     "@swc-node/register": "1.5.4",
     "@swc/cli": "0.1.57",
     "@swc/core": "1.3.15",
     "@swc/jest": "0.2.23",
     "@types/jest": "29.2.2",
     "@types/node": "18.11.9",
+    "@types/prompts": "^2.4.1",
     "@typescript-eslint/eslint-plugin": "5.42.1",
     "@typescript-eslint/parser": "5.42.1",
     "eslint": "8.27.0",
@@ -54,6 +63,7 @@
     "nodemon": "2.0.20",
     "prettier": "2.7.1",
     "rimraf": "3.0.2",
+    "semantic-release": "^19.0.5",
     "typescript": "4.8.4"
   }
 }

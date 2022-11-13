@@ -1,37 +1,15 @@
-# typescript-swc-starter
+# insta-who-unfollowed-me
 
-A simple node boilerplate made in typescript using swc.
+Utility to make it easy to track unfollowers on Instagram.
 
-> NOTE : A version without rust compiler [swc](https://swc.rs/) is available [here](https://github.com/maxgfr/boilerplate-typescript-node).
+![Alt Text](https://raw.githubusercontent.com/maxgfr/insta-who-unfollowed-me/main/.github/assets/main.gif)
 
-## Clone repository and install dependencies
-
-```sh
-git clone https://github.com/maxgfr/typescript-swc-starter # For cloning the repository
-cd typescript-swc-starter # To navigate to the repository root
-yarn # Install dependencies
-cp .env.example .env
-```
-
-## Running the code
+## Usage
 
 ```sh
-yarn build # For building the code with typechecking
-yarn build:swc # For building without typechecking
-yarn start # For running the code builded
-```
+npm install -g insta-who-unfollowed-me
+insta-who-unfollowed-me
 
-Or in `development` mode:
-
-```sh
-yarn dev # For running the code in development thanks to swc and nodemon
-```
-
-> **:warning: No typechecking made in dev mode**
-
-## Testing the code
-
-```sh
-yarn test # For running unit test
-yarn test:watch # For watching unit test
+# or by using npx
+npx insta-who-unfollowed-me
 ```
