@@ -1,5 +1,6 @@
 import prompts from 'prompts';
 import { Command } from 'commander';
+import { getUnfollowers } from './insta';
 
 type PromptResult = {
   username: string;
@@ -32,7 +33,8 @@ async function processUserInformations() {
     console.log('Missing informations 😭');
     return;
   }
-  
+  const listOfUnfollowers = await getUnfollowers(username, password);
+  console.log(listOfUnfollowers);
 }
 
 export async function runCommand() {

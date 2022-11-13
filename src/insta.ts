@@ -1,6 +1,6 @@
 import { IgApiClient, Feed } from 'instagram-private-api';
 
-export async function getNotFollowingUsers(username: string, password: string): Promise<string[]> {
+export async function getUnfollowers(username: string, password: string): Promise<string[]> {
   const ig = new IgApiClient();
   ig.state.generateDevice(username);
   await ig.simulate.preLoginFlow();
