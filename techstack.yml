@@ -2,7 +2,7 @@ repo_name: maxgfr/insta-who-unfollowed-me
 report_id: 1ffaecbec9f62d664f8122af9f285026
 version: 0.1
 repo_type: Public
-timestamp: '2024-01-05T08:56:16+00:00'
+timestamp: '2024-02-29T18:33:46+00:00'
 requested_by: semantic-release-bot
 provider: github
 branch: main
@@ -93,7 +93,7 @@ tools:
   last_updated_by: Maxime Golfier
   last_updated_on: 2022-11-13 11:30:17.000000000 Z
 - name: Prettier
-  description: 'Prettier is an opinionated code formatter. '
+  description: Prettier is an opinionated code formatter.
   website_url: https://prettier.io/
   version: 2.8.8
   license: MIT
