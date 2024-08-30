@@ -17,7 +17,7 @@
     "build"
   ],
   "bin": {
-    "insta-who-unfollowed-me": "NODE_OPTIONS=--no-deprecation ./build/index.js"
+    "insta-who-unfollowed-me": "./build/index.js"
   },
   "keywords": [
     "instagram",
@@ -65,6 +65,7 @@
     "jest": "29.7.0",
     "nodemon": "2.0.22",
     "prettier": "2.8.8",
+    "punycode": "^2.3.1",
     "rimraf": "5.0.10",
     "semantic-release": "^21.0.0",
     "typescript": "5.5.4"
