@@ -25,7 +25,7 @@
     "unfollowers"
   ],
   "scripts": {
-    "start": "node build/index.js",
+    "start": "node --no-deprecation build/index.js",
     "dev": "nodemon",
     "develop": "node -r @swc-node/register ./src/index.ts",
     "test": "jest --passWithNoTests",
