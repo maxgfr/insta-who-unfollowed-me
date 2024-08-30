@@ -1,6 +1,7 @@
 import prompts from 'prompts';
 import { Command } from 'commander';
 import { getUnfollowers } from './insta';
+import packageJson from '../package.json';
 
 type PromptResult = {
   username: string;
@@ -62,6 +63,7 @@ export async function runCommand() {
   const program = new Command();
 
   program
+    .version(packageJson.version)
     .name('insta-who-unfollowed-me')
     .description('Utility to make it easy to track unfollowers on Instagram')
     .action(() => processUserInformations());

@@ -17,7 +17,7 @@
     "build"
   ],
   "bin": {
-    "insta-who-unfollowed-me": "./build/index.js"
+    "insta-who-unfollowed-me": "./build/index.js --no-deprecation"
   },
   "keywords": [
     "instagram",
