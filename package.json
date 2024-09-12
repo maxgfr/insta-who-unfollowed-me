@@ -54,7 +54,7 @@
     "@swc/cli": "0.4.0",
     "@swc/core": "1.7.26",
     "@swc/jest": "0.2.36",
-    "@types/jest": "29.5.12",
+    "@types/jest": "29.5.13",
     "@types/node": "18.19.50",
     "@types/prompts": "^2.4.1",
     "@typescript-eslint/eslint-plugin": "5.62.0",
