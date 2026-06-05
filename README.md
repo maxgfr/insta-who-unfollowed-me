@@ -12,7 +12,8 @@ Utility to make it easy to track unfollowers on Instagram.
 - 💾 **Save Results**: Export results to a file
 - 📈 **Statistics**: View detailed statistics about your followers
 - 🎨 **Color Themes**: Customizable color themes (light, dark, none)
-- 🚀 **Fast**: Parallel fetching for better performance
+- 💽 **Session Caching**: Reuses a saved login session to avoid repeated checkpoints
+- 🛡️ **Challenge Handling**: Prompts for the verification code when Instagram asks for one
 - 🔄 **Retry Logic**: Automatic retry with exponential backoff
 
 ## Installation
@@ -53,6 +54,26 @@ export INSTA_EMAIL="your@email.com"
 export INSTA_PASSWORD="yourpassword"
 insta-who-unfollowed-me
 ```
+
+### Login Sessions & Challenges
+
+On the first successful login, your authenticated session is cached to
+`~/.insta-who-unfollowed-me/<account>.json` (one file per account, created with
+user-only permissions). Subsequent runs reuse that session instead of logging in
+from scratch, which is the most reliable way to avoid Instagram's
+`checkpoint_required` challenges. If the saved session expires, it's discarded
+and a fresh login happens automatically.
+
+When Instagram does require a verification challenge, the tool asks it to send a
+code (to your email by default) and then prompts you to paste it in:
+
+```
+🔐 Instagram sent a verification code (check your email or SMS).
+✔ Enter the verification code: … 123456
+```
+
+If a checkpoint keeps firing, log in to Instagram once from your browser, confirm
+it's you, then re-run the tool.
 
 ## Options
 
@@ -264,6 +285,40 @@ The tool will automatically retry up to 3 times with a 2-second delay between at
 - **Use a dedicated account**: Consider using a secondary Instagram account
 
 ## Troubleshooting
+
+### "Unsupported version" / `checkpoint_required` → `/web/unsupported_version/`
+
+If the error mentions `checkpoint_required` with a link to
+`https://i.instagram.com/web/unsupported_version/`, this is **not an account
+problem** — Instagram rejected the *client version*. The underlying
+[`instagram-private-api`](https://github.com/dilame/instagram-private-api)
+library bundles an outdated Instagram app version (`222.0.0.13.114`, ~2021) and
+ancient Android 6–8 devices, which Instagram no longer accepts.
+
+This tool already overrides those with **current values** (app version, version
+code, bloks id, and a modern Pixel 8 Pro / Android 14 device) mirrored from the
+maintained [`instagrapi`](https://github.com/subzeroid/instagrapi) library. Run
+with `--verbose` to see what's in use (`🔎 Client: Instagram … device …`).
+
+When those eventually go stale, refresh them via environment variables — get
+current values from
+[instagrapi's `config.py`](https://github.com/subzeroid/instagrapi/blob/master/instagrapi/config.py)
+or [APKMirror](https://www.apkmirror.com/apk/instagram/instagram-instagram/):
+
+```bash
+export INSTA_APP_VERSION="428.0.0.47.67"          # version name
+export INSTA_APP_VERSION_CODE="961145276"          # its numeric version code
+export INSTA_BLOKS_VERSION_ID="<current bloks version id>"
+# android_version/release; dpi; resolution; manufacturer; model; device; cpu
+export INSTA_DEVICE="34/14; 480dpi; 1344x2992; Google/google; Pixel 8 Pro; husky; husky"
+node build/index.js --verbose
+```
+
+> ⚠️ **Heads-up:** `instagram-private-api` (the JS library) is **unmaintained**.
+> Current constants get past `unsupported_version`, but the library can still hit
+> other walls (sentry blocks, login challenges, signing changes), so success
+> isn't guaranteed. For a properly maintained option, the Python library
+> [`instagrapi`](https://github.com/subzeroid/instagrapi) is the realistic path.
 
 ### "Challenge Required" Error
 
