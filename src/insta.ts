@@ -3,6 +3,7 @@ import {
   Feed,
   IgCheckpointError,
   IgLoginRequiredError,
+  IgLoginTwoFactorRequiredError,
   IgResponseError,
 } from 'instagram-private-api';
 import {
@@ -10,6 +11,7 @@ import {
   InstagramError,
   InstagramErrorType,
   ChallengeHandler,
+  TwoFactorHandler,
 } from './types';
 import { config } from './config';
 import { loadSession, saveSession, clearSession } from './session';
@@ -29,6 +31,8 @@ export interface GetUnfollowersOptions {
   limit?: number;
   /** Called when Instagram requires a verification challenge; should resolve with the code. */
   onChallenge?: ChallengeHandler;
+  /** Called when the account has two-factor authentication enabled; should resolve with the code. */
+  onTwoFactor?: TwoFactorHandler;
   /** Emit diagnostic details (e.g. the challenge step) to stderr. */
   verbose?: boolean;
 }
@@ -181,6 +185,7 @@ export async function getUnfollowers(
     withPreLoginFlow = true,
     limit,
     onChallenge,
+    onTwoFactor,
     verbose = false,
   } = options;
 
@@ -193,7 +198,15 @@ export async function getUnfollowers(
   try {
     const restored = await restoreSession(ig, email);
     if (!restored) {
-      await login(ig, email, password, withPreLoginFlow, onChallenge, verbose);
+      await login(
+        ig,
+        email,
+        password,
+        withPreLoginFlow,
+        onChallenge,
+        onTwoFactor,
+        verbose,
+      );
     }
 
     let data: { followers: FeedUser[]; following: FeedUser[] };
@@ -211,6 +224,7 @@ export async function getUnfollowers(
           password,
           withPreLoginFlow,
           onChallenge,
+          onTwoFactor,
           verbose,
         );
         data = await fetchFollowData(ig, limit);
@@ -313,7 +327,8 @@ async function restoreSession(
 
 /**
  * Perform a fresh login: simulate pre-login traffic, authenticate, resolve a
- * challenge if one fires, then persist the session for next time.
+ * challenge or two-factor prompt if one fires, then persist the session for
+ * next time.
  */
 async function login(
   ig: IgApiClient,
@@ -321,6 +336,7 @@ async function login(
   password: string,
   withPreLoginFlow: boolean,
   onChallenge?: ChallengeHandler,
+  onTwoFactor?: TwoFactorHandler,
   verbose = false,
 ): Promise<void> {
   if (withPreLoginFlow) {
@@ -332,12 +348,102 @@ async function login(
   } catch (error) {
     if (error instanceof IgCheckpointError) {
       await resolveChallenge(ig, onChallenge, verbose);
+    } else if (error instanceof IgLoginTwoFactorRequiredError) {
+      await resolveTwoFactor(ig, error, onTwoFactor, verbose);
     } else {
       throw error;
     }
   }
 
   await saveSession(email, await serializeState(ig));
+}
+
+/**
+ * Complete a two-factor login: pick the code source Instagram supports
+ * (authenticator app preferred over SMS), ask the handler for the code, and
+ * submit it with the device marked as trusted — so the persisted session (and
+ * future logins from this device) skip 2FA.
+ *
+ * Only code-entry methods can be handled here. An account whose sole 2FA method
+ * is the in-app "login request" prompt can't be approved from the CLI: the
+ * prompt dies as soon as this process gives up, so we explain instead of
+ * spamming the phone. Any failure surfaces as CHALLENGE_REQUIRED, which the CLI
+ * does NOT retry — retrying a 2FA login just fires more push prompts.
+ */
+export async function resolveTwoFactor(
+  ig: IgApiClient,
+  error: IgLoginTwoFactorRequiredError,
+  onTwoFactor?: TwoFactorHandler,
+  verbose = false,
+): Promise<void> {
+  const info = error.response?.body?.two_factor_info;
+  if (!info?.two_factor_identifier) {
+    throw new InstagramError(
+      'Instagram requires two-factor authentication, but its response did not include ' +
+        'the identifier needed to complete it. Try again, or log in once in the app first.',
+      InstagramErrorType.CHALLENGE_REQUIRED,
+    );
+  }
+
+  if (verbose) {
+    console.error(
+      `   🔎 2FA methods: totp=${!!info.totp_two_factor_on} sms=${!!info.sms_two_factor_on}`,
+    );
+  }
+
+  // verification_method: '0' = authenticator app (TOTP), '1' = SMS.
+  if (!info.totp_two_factor_on && !info.sms_two_factor_on) {
+    throw new InstagramError(
+      'Your account requires two-factor authentication, but no code-based method ' +
+        '(authenticator app or SMS) is enabled — likely only in-app "login request" ' +
+        'prompts, which the CLI cannot complete. Add an authentication app or SMS as a ' +
+        '2FA method in Instagram (Settings → Accounts Centre → Password and security), ' +
+        'then re-run.',
+      InstagramErrorType.CHALLENGE_REQUIRED,
+    );
+  }
+
+  if (!onTwoFactor) {
+    throw new InstagramError(
+      'Two-factor authentication is required but no 2FA handler was provided.',
+      InstagramErrorType.CHALLENGE_REQUIRED,
+    );
+  }
+
+  const useTotp = !!info.totp_two_factor_on;
+  const source = useTotp
+    ? 'authenticator app'
+    : `SMS${info.obfuscated_phone_number ? ` sent to ${info.obfuscated_phone_number}` : ''}`;
+  const code = await onTwoFactor(source);
+  if (!code) {
+    throw new InstagramError(
+      'No two-factor code was provided.',
+      InstagramErrorType.CHALLENGE_REQUIRED,
+    );
+  }
+
+  try {
+    await ig.account.twoFactorLogin({
+      username: info.username,
+      verificationCode: code.trim(),
+      twoFactorIdentifier: info.two_factor_identifier,
+      verificationMethod: useTotp ? '0' : '1',
+      trustThisDevice: '1',
+    });
+  } catch (submitError) {
+    // A rejected code comes back as a generic IgResponseError whose message
+    // contains "login" — left alone it would be classified AUTHENTICATION_FAILED
+    // and retried, firing fresh login attempts (and push prompts). Pin it here.
+    throw new InstagramError(
+      'Instagram did not accept the two-factor code (wrong, expired, or already used). ' +
+        'Re-run and enter a fresh code.',
+      InstagramErrorType.CHALLENGE_REQUIRED,
+      {
+        originalError:
+          submitError instanceof Error ? submitError.message : submitError,
+      },
+    );
+  }
 }
 
 /**
