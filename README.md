@@ -14,7 +14,8 @@ Utility to make it easy to track unfollowers on Instagram.
 - 🎨 **Color Themes**: Customizable color themes (light, dark, none)
 - 💽 **Session Caching**: Reuses a saved login session to avoid repeated checkpoints
 - 🛡️ **Challenge Handling**: Prompts for the verification code when Instagram asks for one
-- 🔐 **Two-Factor Authentication**: Prompts for your authenticator-app or SMS code when 2FA is enabled
+- 🔐 **Two-Factor Authentication**: Prompts for your 2FA or verification code (login handled by instagrapi)
+- 🍪 **Browser Session Login**: Reuse the `sessionid` cookie from instagram.com instead of a password
 - 🔄 **Retry Logic**: Automatic retry with exponential backoff
 
 ## Installation
@@ -25,6 +26,15 @@ npm install -g insta-who-unfollowed-me
 # or using npx
 npx insta-who-unfollowed-me
 ```
+
+Logging in with a password also needs **Python 3.10+** (`python3` on your PATH).
+Instagram only accepts the Android app's current login flow, which the Python
+library [instagrapi](https://github.com/subzeroid/instagrapi) implements. On the
+first run the tool installs a pinned instagrapi into a private virtualenv
+(`~/.insta-who-unfollowed-me/python`, about 30 seconds, once). To use your own
+interpreter instead, point `INSTA_PYTHON` at one that has instagrapi installed.
+
+Logging in with a [browser session](#log-in-with-a-browser-session) needs no Python.
 
 ## Usage
 
@@ -58,13 +68,8 @@ insta-who-unfollowed-me
 
 ### Log in with a browser session
 
-Since September 2026 Instagram refuses password logins from this tool with
-`Your version of Instagram is out of date`: the Android app now logs in through a
-new flow that the underlying `instagram-private-api` library doesn't implement.
-Changing `INSTA_APP_VERSION` does not help.
-
-Use the session of your browser instead. No password is sent, and two-factor
-authentication is already done:
+Instead of a password, you can reuse the session of your browser. No password is
+sent, two-factor authentication is already done, and Python isn't needed:
 
 1. Log in on [instagram.com](https://www.instagram.com) in your browser.
 2. Open the developer tools → **Application** (Chrome) or **Storage** (Firefox/Safari)
@@ -84,40 +89,28 @@ stays valid until you log out of that browser session.
 
 ### Login Sessions & Challenges
 
-On the first successful login, your authenticated session is cached to
-`~/.insta-who-unfollowed-me/<account>.json` (one file per account, created with
-user-only permissions). Subsequent runs reuse that session instead of logging in
-from scratch, which is the most reliable way to avoid Instagram's
-`checkpoint_required` challenges. If the saved session expires, it's discarded
-and a fresh login happens automatically.
+instagrapi performs the password login and saves the session, together with its
+device identity, to `~/.insta-who-unfollowed-me/<account>.instagrapi.json` (one
+file per account, user-only permissions). Later runs reuse and validate that
+session instead of logging in from scratch, which is the most reliable way to
+avoid Instagram's `checkpoint_required` challenges. The Node side then fetches
+your followers **as the same device** (same ids, app version and user agent), so
+Instagram sees one phone, not a login from one device followed by calls from
+another.
 
-When Instagram does require a verification challenge, the tool asks it to send a
-code (to your email by default) and then prompts you to paste it in:
+When Instagram asks for a verification code (sent by email or SMS) or your
+two-factor code, you're prompted for it in the terminal:
 
 ```
-🔐 Instagram sent a verification code (check your email or SMS).
-✔ Enter the verification code: … 123456
+🔐 Instagram sent a verification code (email). Enter it: 123456
+🔐 Two-factor authentication is enabled. Enter the 2FA code: 123456
 ```
 
 If a checkpoint keeps firing, log in to Instagram once from your browser, confirm
 it's you, then re-run the tool.
 
-### Two-Factor Authentication (2FA)
-
-If your account has two-factor authentication enabled, the tool prompts for the
-current code — from your authenticator app when you have one set up, otherwise
-from the SMS Instagram just sent:
-
-```
-🔐 Two-factor authentication is enabled. Get the code from your authenticator app.
-✔ Enter the 2FA code: … 123456
-```
-
-The login is completed with "trust this device" set and the session is cached,
-so you're only asked once. If your only 2FA method is the in-app "login request"
-prompt, the CLI can't complete it — add an authentication app or SMS as a 2FA
-method in Instagram (Settings → Accounts Centre → Password and security) and
-re-run.
+> Upgrading from 1.5.x or earlier: the old `~/.insta-who-unfollowed-me/<account>.json`
+> session files are no longer used and can be deleted.
 
 ## Options
 
@@ -340,10 +333,12 @@ problem** — Instagram rejected the *client version*. The underlying
 library bundles an outdated Instagram app version (`222.0.0.13.114`, ~2021) and
 ancient Android 6–8 devices, which Instagram no longer accepts.
 
-This tool already overrides those with **current values** (app version, version
-code, bloks id, and a modern Pixel 8 Pro / Android 14 device) mirrored from the
-maintained [`instagrapi`](https://github.com/subzeroid/instagrapi) library. Run
-with `--verbose` to see what's in use (`🔎 Client: Instagram … device …`).
+With a password login, the client identity comes from instagrapi itself: upgrade
+the pinned instagrapi version (`INSTAGRAPI_VERSION` in `src/instagrapi.ts`) to get
+newer values. With a browser session (`INSTA_SESSIONID`), the tool uses **current
+values** (app version, version code, bloks id, and a modern Pixel 8 Pro /
+Android 14 device) mirrored from instagrapi. Run with `--verbose` to see what's
+in use (`🔎 Client: Instagram … device …`).
 
 When those eventually go stale, refresh them via environment variables — get
 current values from
@@ -359,11 +354,10 @@ export INSTA_DEVICE="34/14; 480dpi; 1344x2992; Google/google; Pixel 8 Pro; husky
 node build/index.js --verbose
 ```
 
-> ⚠️ **Heads-up:** `instagram-private-api` (the JS library) is **unmaintained**.
-> Current constants get past `unsupported_version`, but the library can still hit
-> other walls (sentry blocks, login challenges, signing changes), so success
-> isn't guaranteed. For a properly maintained option, the Python library
-> [`instagrapi`](https://github.com/subzeroid/instagrapi) is the realistic path.
+> ⚠️ **Heads-up:** `instagram-private-api` (the JS library, still used to fetch
+> followers) is **unmaintained**. Logins already go through instagrapi, but the
+> fetch can still hit other walls (sentry blocks, signing changes), so success
+> isn't guaranteed.
 
 ### "Challenge Required" Error
 

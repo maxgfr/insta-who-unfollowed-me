@@ -21,6 +21,8 @@ export enum InstagramErrorType {
   INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
   ACCOUNT_LOCKED = 'ACCOUNT_LOCKED',
   CHALLENGE_REQUIRED = 'CHALLENGE_REQUIRED',
+  /** Python / instagrapi (needed to log in) is missing or failed to install. */
+  SETUP_REQUIRED = 'SETUP_REQUIRED',
   UNKNOWN_ERROR = 'UNKNOWN_ERROR',
 }
 
@@ -170,17 +172,6 @@ export interface Credentials {
  * @returns The security code, or an empty string if the user declined to enter one.
  */
 export type ChallengeHandler = () => Promise<string>;
-
-/**
- * Supplies the current two-factor code when the account has 2FA enabled.
- * Implemented by the CLI (interactive prompt); kept as a callback so the
- * Instagram layer stays free of any user-interaction concerns.
- *
- * @param source - Where the code comes from, for display (e.g. "authenticator
- *                 app" or "SMS sent to **99").
- * @returns The 2FA code, or an empty string if the user declined to enter one.
- */
-export type TwoFactorHandler = (source: string) => Promise<string>;
 
 /**
  * CLI options

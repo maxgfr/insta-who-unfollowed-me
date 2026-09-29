@@ -3,7 +3,6 @@ import {
   Feed,
   IgCheckpointError,
   IgLoginRequiredError,
-  IgLoginTwoFactorRequiredError,
   IgResponseError,
 } from 'instagram-private-api';
 import {
@@ -11,10 +10,9 @@ import {
   InstagramError,
   InstagramErrorType,
   ChallengeHandler,
-  TwoFactorHandler,
 } from './types';
 import { config } from './config';
-import { loadSession, saveSession, clearSession } from './session';
+import { applyInstagrapiSession, loginWithInstagrapi } from './instagrapi';
 
 /** Minimal shape we rely on from a follower/following feed item. */
 interface FeedUser {
@@ -25,14 +23,10 @@ interface FeedUser {
  * Options controlling how unfollowers are fetched.
  */
 export interface GetUnfollowersOptions {
-  /** Simulate Instagram's pre-login traffic before a fresh login (recommended on the first attempt). */
-  withPreLoginFlow?: boolean;
   /** Cap the number of followers/following fetched per feed. */
   limit?: number;
   /** Called when Instagram requires a verification challenge; should resolve with the code. */
   onChallenge?: ChallengeHandler;
-  /** Called when the account has two-factor authentication enabled; should resolve with the code. */
-  onTwoFactor?: TwoFactorHandler;
   /** Emit diagnostic details (e.g. the challenge step) to stderr. */
   verbose?: boolean;
   /**
@@ -94,24 +88,6 @@ export function sessionAuthorization(session: BrowserSession): string {
     should_use_header_over_cookies: true,
   });
   return `Bearer IGT:2:${Buffer.from(payload).toString('base64')}`;
-}
-
-/**
- * Whether a login was refused with `needs_upgrade` ("Your version of Instagram
- * is out of date"). Since September 2026 Instagram answers password logins on
- * the legacy `accounts/login/` endpoint this way whatever app version is
- * announced: the Android app now logs in through a Bloks/CAA flow that
- * instagram-private-api does not implement. Retrying cannot help.
- */
-export function isNeedsUpgrade(error: unknown): error is IgResponseError {
-  if (!(error instanceof IgResponseError)) return false;
-  const body = error.response?.body as
-    | { error_type?: string; message?: string }
-    | undefined;
-  return (
-    body?.error_type === 'needs_upgrade' ||
-    /out of date/i.test(body?.message ?? '')
-  );
 }
 
 /**
@@ -254,14 +230,14 @@ export function withManualLink(message: string, url?: string): string {
 /**
  * Retrieves the list of users who don't follow back on Instagram.
  *
- * Reuses a persisted session when one exists (avoiding most checkpoints), falls
- * back to a fresh login otherwise, and recovers from a verification challenge —
- * whether it fires during login or mid-request — by driving the challenge flow
- * through the provided handler.
+ * Logs in through instagrapi (which reuses its saved session when still valid)
+ * and continues that session on the same device — or, with `sessionId`, uses a
+ * browser session directly. Recovers from a verification challenge fired
+ * mid-request by driving the challenge flow through the provided handler.
  *
  * @param email - Instagram email
  * @param password - Instagram password
- * @param options - Fetch options (pre-login flow, limit, challenge handler)
+ * @param options - Fetch options (limit, challenge handler, browser session)
  * @returns Promise resolving to UnfollowerResult with list and statistics
  * @throws {InstagramError} If authentication fails or an API error occurs
  */
@@ -270,98 +246,82 @@ export async function getUnfollowers(
   password: string,
   options: GetUnfollowersOptions = {},
 ): Promise<UnfollowerResult> {
-  const {
-    withPreLoginFlow = true,
-    limit,
-    onChallenge,
-    onTwoFactor,
-    verbose = false,
-    sessionId,
-  } = options;
+  const { limit, onChallenge, verbose = false, sessionId } = options;
 
   const session = sessionId ? parseSessionId(sessionId) : undefined;
 
   const ig = new IgApiClient();
-  ig.state.generateDevice(email || session?.userId || '');
-  // Replace the library's outdated bundled app version (Instagram rejects it as
-  // `unsupported_version`) with whatever the env supplies.
-  const appVersion = applyClientVersionOverrides(ig, verbose);
-
   if (session) {
-    return getUnfollowersWithSession(ig, session, limit, verbose);
+    ig.state.generateDevice(session.userId);
+    // Replace the library's outdated bundled app version (Instagram rejects it
+    // as `unsupported_version`) with current values or the env's.
+    applyClientVersionOverrides(ig, verbose);
+    ig.state.authorization = sessionAuthorization(session);
+    if (verbose) {
+      console.error(
+        `   🔎 Using browser session for user id ${session.userId}.`,
+      );
+    }
+  } else {
+    applyInstagrapiSession(
+      ig,
+      await loginWithInstagrapi(email, password, verbose),
+    );
+    if (verbose) {
+      console.error(
+        `   🔎 Logged in with instagrapi; continuing on its device: Instagram ` +
+          `${ig.state.appVersion}, ${ig.state.deviceString}`,
+      );
+    }
   }
 
   try {
-    const restored = await restoreSession(ig, email);
-    if (!restored) {
-      await login(
-        ig,
-        email,
-        password,
-        withPreLoginFlow,
-        onChallenge,
-        onTwoFactor,
-        verbose,
-      );
-    }
-
     let data: { followers: FeedUser[]; following: FeedUser[] };
     try {
       data = await fetchFollowData(ig, limit);
     } catch (error) {
-      if (restored && isSessionRejected(error)) {
-        // The persisted session has expired — drop it and log in fresh.
-        if (verbose)
-          console.error('   🔎 Saved session expired; logging in fresh.');
-        await clearSession(email);
-        await login(
-          ig,
-          email,
-          password,
-          withPreLoginFlow,
-          onChallenge,
-          onTwoFactor,
-          verbose,
+      if (!(error instanceof IgCheckpointError)) throw error;
+      // A checkpoint fired mid-request (Instagram's anti-bot defense).
+      if (verbose)
+        console.error(
+          '   🔎 Checkpoint hit during fetch; attempting challenge.',
         );
+      await resolveChallenge(ig, onChallenge, verbose);
+      // Retry once. If Instagram immediately re-checkpoints, the challenge did
+      // not actually lift the block — it's an anti-scraping flag, not something
+      // a code can clear.
+      try {
         data = await fetchFollowData(ig, limit);
-      } else if (error instanceof IgCheckpointError) {
-        // A checkpoint fired mid-request (Instagram's anti-bot defense).
-        if (verbose)
-          console.error(
-            '   🔎 Checkpoint hit during fetch; attempting challenge.',
+      } catch (retryError) {
+        if (retryError instanceof IgCheckpointError) {
+          throw new InstagramError(
+            withManualLink(
+              'Instagram re-issued a checkpoint right after verification. This is an ' +
+                'anti-automation block on your account or IP, not a wrong code. Confirm ' +
+                "it's you, then wait a while before retrying (and consider --limit to " +
+                'fetch fewer profiles).',
+              retryError.url ?? checkpointUrl(ig),
+            ),
+            InstagramErrorType.CHALLENGE_REQUIRED,
           );
-        await resolveChallenge(ig, onChallenge, verbose);
-        await saveSession(email, await serializeState(ig));
-        // Retry once. If Instagram immediately re-checkpoints, the challenge did
-        // not actually lift the block — it's an anti-scraping flag, not something
-        // a code can clear.
-        try {
-          data = await fetchFollowData(ig, limit);
-        } catch (retryError) {
-          if (retryError instanceof IgCheckpointError) {
-            throw new InstagramError(
-              withManualLink(
-                'Instagram re-issued a checkpoint right after verification. This is an ' +
-                  'anti-automation block on your account or IP, not a wrong code. Confirm ' +
-                  "it's you, then wait a while before retrying (and consider --limit to " +
-                  'fetch fewer profiles).',
-                retryError.url ?? checkpointUrl(ig),
-              ),
-              InstagramErrorType.CHALLENGE_REQUIRED,
-            );
-          }
-          throw retryError;
         }
-      } else {
-        throw error;
+        throw retryError;
       }
     }
 
     return computeResult(data.followers, data.following);
   } catch (error) {
+    if (session && isSessionRejected(error)) {
+      throw new InstagramError(
+        'Instagram rejected the sessionid (expired, logged out, or copied incorrectly). ' +
+          'Log in again on instagram.com and copy a fresh "sessionid" cookie.',
+        InstagramErrorType.INVALID_CREDENTIALS,
+        { originalError: error instanceof Error ? error.message : error },
+      );
+    }
     // `checkpoint_required` (distinct from `challenge_required`) is a generic
     // IgResponseError the library doesn't special-case. Surface the browser link
-    // so the user can clear it manually, whether it fired at login or mid-fetch.
+    // so the user can clear it manually.
     if (isCheckpointRequired(error)) {
       const body = error.response?.body;
       if (verbose) {
@@ -372,15 +332,13 @@ export async function getUnfollowers(
       const url = extractCheckpointUrl(body);
 
       // `/web/unsupported_version/` means Instagram rejected the CLIENT version,
-      // not your account — the bundled library is simply too old.
+      // not your account.
       if (typeof url === 'string' && /unsupported_version/i.test(url)) {
         throw new InstagramError(
-          `Instagram rejected the client as an unsupported app version (the bundled ` +
-            `library uses ${appVersion}, which is outdated). This is NOT an account ` +
-            `problem. Set a current Instagram Android version via the INSTA_APP_VERSION ` +
-            `and INSTA_APP_VERSION_CODE env vars (get them from apkmirror.com), then ` +
-            `re-run. Note: instagram-private-api is unmaintained, so even an updated ` +
-            `version may not work — see the README.`,
+          `Instagram rejected the client as an unsupported app version ` +
+            `(${ig.state.appVersion}). This is NOT an account problem. Set a current ` +
+            `Instagram Android version via the INSTA_APP_VERSION and ` +
+            `INSTA_APP_VERSION_CODE env vars (see the README), then re-run.`,
           InstagramErrorType.CHALLENGE_REQUIRED,
         );
       }
@@ -396,199 +354,7 @@ export async function getUnfollowers(
         InstagramErrorType.CHALLENGE_REQUIRED,
       );
     }
-    if (isNeedsUpgrade(error)) {
-      throw new InstagramError(
-        'Instagram refused the password login ("Your version of Instagram is out of ' +
-          'date"). Instagram moved app logins to a new flow the underlying library ' +
-          'does not support, so retrying or changing INSTA_APP_VERSION will not help.\n' +
-          '   Log in on instagram.com in your browser, copy the "sessionid" cookie and ' +
-          're-run with INSTA_SESSIONID set (see "Log in with a browser session" in the README).',
-        InstagramErrorType.CHALLENGE_REQUIRED,
-      );
-    }
     throw InstagramError.fromError(error);
-  }
-}
-
-/**
- * Fetch unfollowers with a browser session instead of a password login. The
- * session is never persisted: the cookie itself is what the user keeps.
- */
-async function getUnfollowersWithSession(
-  ig: IgApiClient,
-  session: BrowserSession,
-  limit: number | undefined,
-  verbose: boolean,
-): Promise<UnfollowerResult> {
-  ig.state.authorization = sessionAuthorization(session);
-  if (verbose) {
-    console.error(`   🔎 Using browser session for user id ${session.userId}.`);
-  }
-  try {
-    const data = await fetchFollowData(ig, limit);
-    return computeResult(data.followers, data.following);
-  } catch (error) {
-    if (isSessionRejected(error)) {
-      throw new InstagramError(
-        'Instagram rejected the sessionid (expired, logged out, or copied incorrectly). ' +
-          'Log in again on instagram.com and copy a fresh "sessionid" cookie.',
-        InstagramErrorType.INVALID_CREDENTIALS,
-        { originalError: error instanceof Error ? error.message : error },
-      );
-    }
-    if (isCheckpointRequired(error)) {
-      throw new InstagramError(
-        withManualLink(
-          'Instagram returned a "checkpoint_required" block. Confirm it\'s you on ' +
-            'instagram.com, wait a while, then re-run.',
-          extractCheckpointUrl(error.response?.body),
-        ),
-        InstagramErrorType.CHALLENGE_REQUIRED,
-      );
-    }
-    throw InstagramError.fromError(error);
-  }
-}
-
-/**
- * Restore a persisted session into the client.
- *
- * @returns `true` if a usable session was applied, `false` if none existed or it
- *          was corrupt (in which case it's discarded and a fresh login is needed).
- */
-async function restoreSession(
-  ig: IgApiClient,
-  email: string,
-): Promise<boolean> {
-  const saved = await loadSession(email);
-  if (!saved) return false;
-  try {
-    await ig.state.deserialize(saved);
-    return true;
-  } catch {
-    await clearSession(email);
-    return false;
-  }
-}
-
-/**
- * Perform a fresh login: simulate pre-login traffic, authenticate, resolve a
- * challenge or two-factor prompt if one fires, then persist the session for
- * next time.
- */
-async function login(
-  ig: IgApiClient,
-  email: string,
-  password: string,
-  withPreLoginFlow: boolean,
-  onChallenge?: ChallengeHandler,
-  onTwoFactor?: TwoFactorHandler,
-  verbose = false,
-): Promise<void> {
-  if (withPreLoginFlow) {
-    await ig.simulate.preLoginFlow();
-  }
-
-  try {
-    await ig.account.login(email, password);
-  } catch (error) {
-    if (error instanceof IgCheckpointError) {
-      await resolveChallenge(ig, onChallenge, verbose);
-    } else if (error instanceof IgLoginTwoFactorRequiredError) {
-      await resolveTwoFactor(ig, error, onTwoFactor, verbose);
-    } else {
-      throw error;
-    }
-  }
-
-  await saveSession(email, await serializeState(ig));
-}
-
-/**
- * Complete a two-factor login: pick the code source Instagram supports
- * (authenticator app preferred over SMS), ask the handler for the code, and
- * submit it with the device marked as trusted — so the persisted session (and
- * future logins from this device) skip 2FA.
- *
- * Only code-entry methods can be handled here. An account whose sole 2FA method
- * is the in-app "login request" prompt can't be approved from the CLI: the
- * prompt dies as soon as this process gives up, so we explain instead of
- * spamming the phone. Any failure surfaces as CHALLENGE_REQUIRED, which the CLI
- * does NOT retry — retrying a 2FA login just fires more push prompts.
- */
-export async function resolveTwoFactor(
-  ig: IgApiClient,
-  error: IgLoginTwoFactorRequiredError,
-  onTwoFactor?: TwoFactorHandler,
-  verbose = false,
-): Promise<void> {
-  const info = error.response?.body?.two_factor_info;
-  if (!info?.two_factor_identifier) {
-    throw new InstagramError(
-      'Instagram requires two-factor authentication, but its response did not include ' +
-        'the identifier needed to complete it. Try again, or log in once in the app first.',
-      InstagramErrorType.CHALLENGE_REQUIRED,
-    );
-  }
-
-  if (verbose) {
-    console.error(
-      `   🔎 2FA methods: totp=${!!info.totp_two_factor_on} sms=${!!info.sms_two_factor_on}`,
-    );
-  }
-
-  // verification_method: '0' = authenticator app (TOTP), '1' = SMS.
-  if (!info.totp_two_factor_on && !info.sms_two_factor_on) {
-    throw new InstagramError(
-      'Your account requires two-factor authentication, but no code-based method ' +
-        '(authenticator app or SMS) is enabled — likely only in-app "login request" ' +
-        'prompts, which the CLI cannot complete. Add an authentication app or SMS as a ' +
-        '2FA method in Instagram (Settings → Accounts Centre → Password and security), ' +
-        'then re-run.',
-      InstagramErrorType.CHALLENGE_REQUIRED,
-    );
-  }
-
-  if (!onTwoFactor) {
-    throw new InstagramError(
-      'Two-factor authentication is required but no 2FA handler was provided.',
-      InstagramErrorType.CHALLENGE_REQUIRED,
-    );
-  }
-
-  const useTotp = !!info.totp_two_factor_on;
-  const source = useTotp
-    ? 'authenticator app'
-    : `SMS${info.obfuscated_phone_number ? ` sent to ${info.obfuscated_phone_number}` : ''}`;
-  const code = await onTwoFactor(source);
-  if (!code) {
-    throw new InstagramError(
-      'No two-factor code was provided.',
-      InstagramErrorType.CHALLENGE_REQUIRED,
-    );
-  }
-
-  try {
-    await ig.account.twoFactorLogin({
-      username: info.username,
-      verificationCode: code.trim(),
-      twoFactorIdentifier: info.two_factor_identifier,
-      verificationMethod: useTotp ? '0' : '1',
-      trustThisDevice: '1',
-    });
-  } catch (submitError) {
-    // A rejected code comes back as a generic IgResponseError whose message
-    // contains "login" — left alone it would be classified AUTHENTICATION_FAILED
-    // and retried, firing fresh login attempts (and push prompts). Pin it here.
-    throw new InstagramError(
-      'Instagram did not accept the two-factor code (wrong, expired, or already used). ' +
-        'Re-run and enter a fresh code.',
-      InstagramErrorType.CHALLENGE_REQUIRED,
-      {
-        originalError:
-          submitError instanceof Error ? submitError.message : submitError,
-      },
-    );
   }
 }
 
@@ -668,18 +434,6 @@ async function resolveChallenge(
       InstagramErrorType.CHALLENGE_REQUIRED,
     );
   }
-}
-
-/**
- * Serialize the client's auth state for persistence, stripping the volatile
- * `constants` key the library advises not to store.
- */
-async function serializeState(
-  ig: IgApiClient,
-): Promise<Record<string, unknown>> {
-  const state = (await ig.state.serialize()) as Record<string, unknown>;
-  delete state.constants;
-  return state;
 }
 
 /**

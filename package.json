@@ -15,7 +15,8 @@
   },
   "homepage": "https://github.com/maxgfr/insta-who-unfollowed-me#readme",
   "files": [
-    "build"
+    "build",
+    "python"
   ],
   "bin": {
     "insta-who-unfollowed-me": "./build/index.js"

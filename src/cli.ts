@@ -99,31 +99,6 @@ async function promptChallengeCode(): Promise<string> {
   }
 }
 
-/**
- * Interactive 2FA handler: shown when the account has two-factor authentication
- * enabled. Collects the current code from the source Instagram supports
- * (authenticator app, or the SMS it just sent).
- *
- * @returns The trimmed code, or an empty string if the user submitted nothing.
- */
-async function promptTwoFactorCode(source: string): Promise<string> {
-  console.log(
-    `\n${color.yellow('🔐')} Two-factor authentication is enabled. Get the code from your ${source}.`,
-  );
-  const input = getInteractiveInput();
-  try {
-    const { code } = await prompts({
-      type: 'text',
-      name: 'code',
-      message: 'Enter the 2FA code:',
-      stdin: input?.stream ?? process.stdin,
-    });
-    return (code || '').toString().trim();
-  } finally {
-    input?.close();
-  }
-}
-
 function getCredentials(options: CliOptions): {
   email: string;
   password: string;
@@ -327,10 +302,8 @@ async function processUserInformations(options: CliOptions) {
   while (retryCount < config.maxRetries) {
     try {
       result = await getUnfollowers(finalEmail, finalPassword, {
-        withPreLoginFlow: retryCount === 0,
         limit: options.limit,
         onChallenge: promptChallengeCode,
-        onTwoFactor: promptTwoFactorCode,
         verbose: options.verbose,
         sessionId: sessionId || undefined,
       });
@@ -344,7 +317,8 @@ async function processUserInformations(options: CliOptions) {
 
       if (
         instaError.type === InstagramErrorType.CHALLENGE_REQUIRED ||
-        instaError.type === InstagramErrorType.INVALID_CREDENTIALS
+        instaError.type === InstagramErrorType.INVALID_CREDENTIALS ||
+        instaError.type === InstagramErrorType.SETUP_REQUIRED
       ) {
         // The error message already carries specific guidance (and a browser
         // link when Instagram provided one); don't pile on a generic note.
