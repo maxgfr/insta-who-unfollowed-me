@@ -47,6 +47,10 @@ export class InstagramError extends Error {
     switch (name) {
       case 'IgCheckpointError':
       case 'IgChallengeWrongCodeError':
+      case 'IgLoginTwoFactorRequiredError':
+        // 2FA sits in this group so it is never retried as a plain login
+        // failure: each retry fires another login attempt (and another push
+        // prompt on the user's phone).
         return InstagramErrorType.CHALLENGE_REQUIRED;
       case 'IgLoginBadPasswordError':
       case 'IgLoginInvalidUserError':
@@ -166,6 +170,17 @@ export interface Credentials {
  * @returns The security code, or an empty string if the user declined to enter one.
  */
 export type ChallengeHandler = () => Promise<string>;
+
+/**
+ * Supplies the current two-factor code when the account has 2FA enabled.
+ * Implemented by the CLI (interactive prompt); kept as a callback so the
+ * Instagram layer stays free of any user-interaction concerns.
+ *
+ * @param source - Where the code comes from, for display (e.g. "authenticator
+ *                 app" or "SMS sent to **99").
+ * @returns The 2FA code, or an empty string if the user declined to enter one.
+ */
+export type TwoFactorHandler = (source: string) => Promise<string>;
 
 /**
  * CLI options

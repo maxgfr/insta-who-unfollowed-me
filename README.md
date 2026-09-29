@@ -14,6 +14,7 @@ Utility to make it easy to track unfollowers on Instagram.
 - 🎨 **Color Themes**: Customizable color themes (light, dark, none)
 - 💽 **Session Caching**: Reuses a saved login session to avoid repeated checkpoints
 - 🛡️ **Challenge Handling**: Prompts for the verification code when Instagram asks for one
+- 🔐 **Two-Factor Authentication**: Prompts for your authenticator-app or SMS code when 2FA is enabled
 - 🔄 **Retry Logic**: Automatic retry with exponential backoff
 
 ## Installation
@@ -74,6 +75,23 @@ code (to your email by default) and then prompts you to paste it in:
 
 If a checkpoint keeps firing, log in to Instagram once from your browser, confirm
 it's you, then re-run the tool.
+
+### Two-Factor Authentication (2FA)
+
+If your account has two-factor authentication enabled, the tool prompts for the
+current code — from your authenticator app when you have one set up, otherwise
+from the SMS Instagram just sent:
+
+```
+🔐 Two-factor authentication is enabled. Get the code from your authenticator app.
+✔ Enter the 2FA code: … 123456
+```
+
+The login is completed with "trust this device" set and the session is cached,
+so you're only asked once. If your only 2FA method is the in-app "login request"
+prompt, the CLI can't complete it — add an authentication app or SMS as a 2FA
+method in Instagram (Settings → Accounts Centre → Password and security) and
+re-run.
 
 ## Options
 

@@ -14,6 +14,7 @@ describe('InstagramError.typeFromErrorName', () => {
   it.each([
     ['IgCheckpointError', InstagramErrorType.CHALLENGE_REQUIRED],
     ['IgChallengeWrongCodeError', InstagramErrorType.CHALLENGE_REQUIRED],
+    ['IgLoginTwoFactorRequiredError', InstagramErrorType.CHALLENGE_REQUIRED],
     ['IgLoginBadPasswordError', InstagramErrorType.INVALID_CREDENTIALS],
     ['IgLoginInvalidUserError', InstagramErrorType.INVALID_CREDENTIALS],
     ['IgLoginRequiredError', InstagramErrorType.AUTHENTICATION_FAILED],
@@ -40,6 +41,19 @@ describe('InstagramError.fromError', () => {
 
   it('classifies a checkpoint error by name', () => {
     const result = InstagramError.fromError(namedError('IgCheckpointError'));
+    expect(result.type).toBe(InstagramErrorType.CHALLENGE_REQUIRED);
+  });
+
+  it('classifies a 2FA-required error by name, not as a retryable login failure', () => {
+    // Its message is the generic response-error format containing "login" —
+    // the heuristics alone would misfile it as AUTHENTICATION_FAILED, which the
+    // CLI retries (each retry firing another login attempt and push prompt).
+    const result = InstagramError.fromError(
+      namedError(
+        'IgLoginTwoFactorRequiredError',
+        'POST /api/v1/accounts/login/ - 400 Bad Request; ',
+      ),
+    );
     expect(result.type).toBe(InstagramErrorType.CHALLENGE_REQUIRED);
   });
 

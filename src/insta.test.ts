@@ -1,11 +1,18 @@
-import { IgApiClient, IgResponseError } from 'instagram-private-api';
+import {
+  IgApiClient,
+  IgLoginTwoFactorRequiredError,
+  IgResponseError,
+  AccountRepositoryLoginErrorResponseTwoFactorInfo,
+} from 'instagram-private-api';
 import {
   isSecurityCodeStep,
   withManualLink,
   isCheckpointRequired,
   extractCheckpointUrl,
   applyClientVersionOverrides,
+  resolveTwoFactor,
 } from './insta';
+import { InstagramError, InstagramErrorType } from './types';
 
 /** Build a real IgResponseError with the given JSON body. */
 function responseError(body: Record<string, unknown>): IgResponseError {
@@ -100,6 +107,164 @@ describe('extractCheckpointUrl', () => {
     ).toBeUndefined();
     expect(extractCheckpointUrl(null)).toBeUndefined();
     expect(extractCheckpointUrl('nope')).toBeUndefined();
+  });
+});
+
+describe('resolveTwoFactor', () => {
+  /** Build a real IgLoginTwoFactorRequiredError carrying the given 2FA info. */
+  function twoFactorError(
+    info: Partial<AccountRepositoryLoginErrorResponseTwoFactorInfo>,
+  ): IgLoginTwoFactorRequiredError {
+    return new IgLoginTwoFactorRequiredError({
+      request: { method: 'POST', uri: { path: '/api/v1/accounts/login/' } },
+      statusCode: 400,
+      statusMessage: 'Bad Request',
+      body: { message: '', two_factor_required: true, two_factor_info: info },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  }
+
+  /** A client whose twoFactorLogin is a spy; nothing touches the network. */
+  function fakeClient(): {
+    ig: IgApiClient;
+    twoFactorLogin: jest.Mock;
+  } {
+    const twoFactorLogin = jest.fn().mockResolvedValue({});
+    const ig = { account: { twoFactorLogin } } as unknown as IgApiClient;
+    return { ig, twoFactorLogin };
+  }
+
+  const BASE_INFO = {
+    username: 'someone',
+    two_factor_identifier: 'ident-123',
+    obfuscated_phone_number: '**99',
+  };
+
+  it('prefers the authenticator app and submits the trimmed code as method 0', async () => {
+    const { ig, twoFactorLogin } = fakeClient();
+    const onTwoFactor = jest.fn().mockResolvedValue(' 123456 ');
+
+    await resolveTwoFactor(
+      ig,
+      twoFactorError({
+        ...BASE_INFO,
+        totp_two_factor_on: true,
+        sms_two_factor_on: true,
+      }),
+      onTwoFactor,
+    );
+
+    expect(onTwoFactor).toHaveBeenCalledWith(
+      expect.stringMatching(/authenticator/i),
+    );
+    expect(twoFactorLogin).toHaveBeenCalledWith({
+      username: 'someone',
+      verificationCode: '123456',
+      twoFactorIdentifier: 'ident-123',
+      verificationMethod: '0',
+      trustThisDevice: '1',
+    });
+  });
+
+  it('falls back to SMS (method 1) and names the obfuscated number', async () => {
+    const { ig, twoFactorLogin } = fakeClient();
+    const onTwoFactor = jest.fn().mockResolvedValue('654321');
+
+    await resolveTwoFactor(
+      ig,
+      twoFactorError({
+        ...BASE_INFO,
+        totp_two_factor_on: false,
+        sms_two_factor_on: true,
+      }),
+      onTwoFactor,
+    );
+
+    expect(onTwoFactor).toHaveBeenCalledWith(expect.stringContaining('**99'));
+    expect(twoFactorLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ verificationMethod: '1' }),
+    );
+  });
+
+  it('rejects when no code-based method is enabled, without submitting', async () => {
+    const { ig, twoFactorLogin } = fakeClient();
+
+    await expect(
+      resolveTwoFactor(
+        ig,
+        twoFactorError({
+          ...BASE_INFO,
+          totp_two_factor_on: false,
+          sms_two_factor_on: false,
+        }),
+        jest.fn().mockResolvedValue('123456'),
+      ),
+    ).rejects.toMatchObject({
+      name: 'InstagramError',
+      type: InstagramErrorType.CHALLENGE_REQUIRED,
+    });
+    expect(twoFactorLogin).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the response lacks a two-factor identifier', async () => {
+    const { ig } = fakeClient();
+
+    await expect(
+      resolveTwoFactor(
+        ig,
+        twoFactorError({ username: 'someone', totp_two_factor_on: true }),
+        jest.fn().mockResolvedValue('123456'),
+      ),
+    ).rejects.toMatchObject({
+      type: InstagramErrorType.CHALLENGE_REQUIRED,
+    });
+  });
+
+  it('rejects when no handler was provided', async () => {
+    const { ig } = fakeClient();
+
+    await expect(
+      resolveTwoFactor(
+        ig,
+        twoFactorError({ ...BASE_INFO, totp_two_factor_on: true }),
+      ),
+    ).rejects.toMatchObject({
+      type: InstagramErrorType.CHALLENGE_REQUIRED,
+    });
+  });
+
+  it('rejects an empty code without submitting it', async () => {
+    const { ig, twoFactorLogin } = fakeClient();
+
+    await expect(
+      resolveTwoFactor(
+        ig,
+        twoFactorError({ ...BASE_INFO, totp_two_factor_on: true }),
+        jest.fn().mockResolvedValue(''),
+      ),
+    ).rejects.toMatchObject({
+      type: InstagramErrorType.CHALLENGE_REQUIRED,
+    });
+    expect(twoFactorLogin).not.toHaveBeenCalled();
+  });
+
+  it('wraps a rejected code as CHALLENGE_REQUIRED so the CLI does not retry-login', async () => {
+    const { ig, twoFactorLogin } = fakeClient();
+    // A wrong code surfaces as a generic response error whose message contains
+    // "login" — unwrapped, the heuristics would misfile it as retryable.
+    twoFactorLogin.mockRejectedValue(
+      new Error('POST /api/v1/accounts/two_factor_login/ - 400 Bad Request; '),
+    );
+
+    const promise = resolveTwoFactor(
+      ig,
+      twoFactorError({ ...BASE_INFO, totp_two_factor_on: true }),
+      jest.fn().mockResolvedValue('000000'),
+    );
+    await expect(promise).rejects.toBeInstanceOf(InstagramError);
+    await expect(promise).rejects.toMatchObject({
+      type: InstagramErrorType.CHALLENGE_REQUIRED,
+    });
   });
 });
 
