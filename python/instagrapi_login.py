@@ -6,9 +6,12 @@ to date. The Node CLI runs this script for the login only, then reuses the
 session *and* the device identity below for its own API calls, so Instagram
 sees a single device.
 
-Input (stdin, JSON): {"username", "password", "settings_path", "verbose"}
-Output (last stdout line, JSON): the session, or {"error", "type"} with exit 1.
-Two-factor and challenge codes are asked for on the controlling terminal.
+Protocol, one JSON object per line:
+- stdin, first line: {"username", "password", "settings_path", "verbose"}
+- stdout, progress: {"event": "step", "text"} for the CLI's spinner
+- stdout, prompt: {"event": "prompt", "message"}; the CLI asks the user and
+  answers with the code on the next stdin line
+- stdout, last line: the session, or {"error", "type"} with exit status 1
 """
 
 import json
@@ -20,19 +23,23 @@ from pathlib import Path
 from instagrapi import Client
 
 
+def send(payload):
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+def step(text):
+    send({"event": "step", "text": text})
+
+
 def ask(message):
-    """Prompt on the terminal: stdin carries the JSON request, not the user."""
-    try:
-        path = "CONIN$" if os.name == "nt" else "/dev/tty"
-        with open(path, "r", encoding="utf-8") as tty:
-            sys.stderr.write(message)
-            sys.stderr.flush()
-            return tty.readline().strip()
-    except OSError:
-        return ""
+    """Have the CLI prompt the user; it answers on stdin."""
+    send({"event": "prompt", "message": message})
+    return sys.stdin.readline().strip()
 
 
 def emit(payload, status=0):
+    # Leading newline: instagrapi may have printed a partial line to stdout.
     sys.stdout.write("\n" + json.dumps(payload) + "\n")
     sys.stdout.flush()
     sys.exit(status)
@@ -64,30 +71,41 @@ def login(client, username, password):
     except Exception as exc:  # TwoFactorRequired's import path varies by version
         if type(exc).__name__ != "TwoFactorRequired":
             raise
-        code = ask("\n🔐 Two-factor authentication is enabled. Enter the 2FA code: ")
+        code = ask(
+            "Two-factor authentication is enabled. Enter the code from your "
+            "authenticator app or SMS."
+        )
         if not code:
             raise
+        step("Verifying the 2FA code")
         client.login(username, password, verification_code=code)
 
 
+def ask_challenge_code(username, choice):
+    channel = str(getattr(choice, "name", choice)).lower()
+    code = ask(f"Instagram sent a verification code by {channel}.")
+    step("Verifying the code")
+    return code
+
+
 def main():
-    request = json.load(sys.stdin)
+    request = json.loads(sys.stdin.readline())
     logging.basicConfig(level=logging.INFO if request.get("verbose") else logging.ERROR)
 
     settings_path = Path(request["settings_path"])
     client = Client()
-    client.challenge_code_handler = lambda username, choice: ask(
-        "\n🔐 Instagram sent a verification code "
-        f"({str(getattr(choice, 'name', choice)).lower()}). Enter it: "
-    )
+    client.challenge_code_handler = ask_challenge_code
+    restored = False
     if settings_path.exists():
         try:
             # Reusing the saved device + session avoids a fresh login (and its
             # checkpoints) on every run; login() validates it first.
             client.load_settings(settings_path)
+            restored = bool(client.user_id)
         except Exception:
             pass
 
+    step("Checking the saved session" if restored else "Logging in to Instagram")
     try:
         login(client, request["username"], request["password"])
     except Exception as exc:
@@ -103,6 +121,7 @@ def main():
         {
             "authorization": client.authorization,
             "user_id": str(client.user_id),
+            "username": client.username or "",
             "mid": settings.get("mid") or "",
             "uuids": settings["uuids"],
             "device_settings": settings["device_settings"],

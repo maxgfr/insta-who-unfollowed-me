@@ -2,6 +2,7 @@ import path from 'path';
 import { IgApiClient } from 'instagram-private-api';
 import {
   applyInstagrapiSession,
+  parseHelperEvent,
   parseHelperOutput,
   venvPython,
   InstagrapiSession,
@@ -61,12 +62,40 @@ describe('parseHelperOutput', () => {
     );
   });
 
+  it('does not mistake a trailing event for the result', () => {
+    expect(() =>
+      parseHelperOutput('{"event": "step", "text": "Logging in"}', 1),
+    ).toThrow(
+      expect.objectContaining({ type: InstagramErrorType.SETUP_REQUIRED }),
+    );
+  });
+
   it('reports a crash without JSON output as a setup problem', () => {
     expect(() =>
       parseHelperOutput('Traceback (most recent call last): …', 1),
     ).toThrow(
       expect.objectContaining({ type: InstagramErrorType.SETUP_REQUIRED }),
     );
+  });
+});
+
+describe('parseHelperEvent', () => {
+  it('recognises progress steps and prompts', () => {
+    expect(
+      parseHelperEvent('{"event": "step", "text": "Logging in to Instagram"}'),
+    ).toEqual({ event: 'step', text: 'Logging in to Instagram' });
+    expect(
+      parseHelperEvent('{"event": "prompt", "message": "Enter the 2FA code."}'),
+    ).toEqual({ event: 'prompt', message: 'Enter the 2FA code.' });
+  });
+
+  it('ignores the result line, malformed events and library chatter', () => {
+    expect(parseHelperEvent(JSON.stringify(SESSION))).toBeUndefined();
+    expect(parseHelperEvent('{"event": "step"}')).toBeUndefined();
+    expect(
+      parseHelperEvent('Code entered "123456" for someone'),
+    ).toBeUndefined();
+    expect(parseHelperEvent('')).toBeUndefined();
   });
 });
 

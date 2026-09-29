@@ -10,6 +10,7 @@ import {
 } from './types';
 import { config } from './config';
 import { initColors, color } from './utils/colors';
+import { spinner } from './utils/spinner';
 import packageJson from '../package.json';
 import fs from 'fs/promises';
 import { openSync } from 'fs';
@@ -75,22 +76,20 @@ async function promptUser(
 }
 
 /**
- * Interactive challenge handler: shown when Instagram demands verification.
- * Instagram has already sent a code (to email by default); we collect it here.
- * Reads from the controlling terminal so it works even when stdin is piped.
+ * Interactive code prompt: shown when Instagram asks for a verification or 2FA
+ * code (during the instagrapi login, or a challenge mid-fetch). Reads from the
+ * controlling terminal so it works even when stdin is piped.
  *
  * @returns The trimmed code, or an empty string if the user submitted nothing.
  */
-async function promptChallengeCode(): Promise<string> {
-  console.log(
-    `\n${color.yellow('🔐')} Instagram sent a verification code (check your email or SMS).`,
-  );
+async function promptCode(message: string): Promise<string> {
+  console.error(`${color.yellow('🔐')} ${message}`);
   const input = getInteractiveInput();
   try {
     const { code } = await prompts({
       type: 'text',
       name: 'code',
-      message: 'Enter the verification code:',
+      message: 'Enter the code:',
       stdin: input?.stream ?? process.stdin,
     });
     return (code || '').toString().trim();
@@ -250,6 +249,9 @@ export function securePasswordPromptError(
 async function processUserInformations(options: CliOptions) {
   // Initialize colors based on options
   initColors(options.noColor === false);
+  // --verbose prints diagnostics (and instagrapi's logs) as it goes: an animated
+  // line would garble them, so progress falls back to one line per step.
+  spinner.setAnimated(!options.verbose);
 
   const { email, password, sessionId } = getCredentials(options);
 
@@ -303,12 +305,17 @@ async function processUserInformations(options: CliOptions) {
     try {
       result = await getUnfollowers(finalEmail, finalPassword, {
         limit: options.limit,
-        onChallenge: promptChallengeCode,
+        onChallenge: () =>
+          promptCode(
+            'Instagram sent a verification code (check your email or SMS).',
+          ),
+        onPrompt: promptCode,
         verbose: options.verbose,
         sessionId: sessionId || undefined,
       });
       break;
     } catch (error) {
+      spinner.stop();
       const instaError = InstagramError.fromError(error);
       retryCount++;
 
@@ -335,11 +342,12 @@ async function processUserInformations(options: CliOptions) {
       }
 
       if (retryCount < config.maxRetries) {
-        console.log(
-          `${color.blue('🔄')} Retrying... (${retryCount}/${config.maxRetries})`,
+        spinner.start(
+          `Retrying in ${Math.round(config.retryDelay / 1000)} s (${retryCount}/${config.maxRetries})`,
         );
         // Add delay between retries
         await new Promise((resolve) => setTimeout(resolve, config.retryDelay));
+        spinner.stop();
       }
     }
   }

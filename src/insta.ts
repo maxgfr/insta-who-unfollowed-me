@@ -12,7 +12,12 @@ import {
   ChallengeHandler,
 } from './types';
 import { config } from './config';
-import { applyInstagrapiSession, loginWithInstagrapi } from './instagrapi';
+import {
+  applyInstagrapiSession,
+  CodePrompt,
+  loginWithInstagrapi,
+} from './instagrapi';
+import { spinner } from './utils/spinner';
 
 /** Minimal shape we rely on from a follower/following feed item. */
 interface FeedUser {
@@ -27,6 +32,8 @@ export interface GetUnfollowersOptions {
   limit?: number;
   /** Called when Instagram requires a verification challenge; should resolve with the code. */
   onChallenge?: ChallengeHandler;
+  /** Asks for a code during the instagrapi login (2FA or verification). */
+  onPrompt?: CodePrompt;
   /** Emit diagnostic details (e.g. the challenge step) to stderr. */
   verbose?: boolean;
   /**
@@ -246,7 +253,7 @@ export async function getUnfollowers(
   password: string,
   options: GetUnfollowersOptions = {},
 ): Promise<UnfollowerResult> {
-  const { limit, onChallenge, verbose = false, sessionId } = options;
+  const { limit, onChallenge, onPrompt, verbose = false, sessionId } = options;
 
   const session = sessionId ? parseSessionId(sessionId) : undefined;
 
@@ -265,7 +272,7 @@ export async function getUnfollowers(
   } else {
     applyInstagrapiSession(
       ig,
-      await loginWithInstagrapi(email, password, verbose),
+      await loginWithInstagrapi(email, password, { verbose, onPrompt }),
     );
     if (verbose) {
       console.error(
@@ -281,6 +288,7 @@ export async function getUnfollowers(
       data = await fetchFollowData(ig, limit);
     } catch (error) {
       if (!(error instanceof IgCheckpointError)) throw error;
+      spinner.stop(); // the challenge may prompt for a code
       // A checkpoint fired mid-request (Instagram's anti-bot defense).
       if (verbose)
         console.error(
@@ -449,14 +457,21 @@ async function fetchFollowData(
 ): Promise<{ followers: FeedUser[]; following: FeedUser[] }> {
   const userId = ig.state.cookieUserId;
 
+  spinner.start('Fetching your followers');
   const followers = await getAllItemsFromFeed(
     ig.feed.accountFollowers(userId),
     limit,
+    (count) => spinner.update(`Fetching your followers… ${count}`),
   );
+  spinner.update('Fetching the accounts you follow');
   await delay(config.rateLimit.minDelay);
   const following = await getAllItemsFromFeed(
     ig.feed.accountFollowing(userId),
     limit,
+    (count) => spinner.update(`Fetching the accounts you follow… ${count}`),
+  );
+  spinner.succeed(
+    `Fetched ${followers.length} followers and ${following.length} followings`,
   );
 
   return { followers, following };
@@ -497,16 +512,19 @@ function computeResult(
  *
  * @param feed - The Instagram feed to fetch items from
  * @param limit - Optional limit on the number of items to fetch
+ * @param onProgress - Called with the running count after each page
  * @returns Promise resolving to an array of feed items
  */
 async function getAllItemsFromFeed<T>(
   feed: Feed<unknown, T>,
   limit?: number,
+  onProgress?: (count: number) => void,
 ): Promise<T[]> {
   let items: T[] = [];
   do {
     const batch = await feed.items();
     items = items.concat(batch);
+    onProgress?.(limit ? Math.min(items.length, limit) : items.length);
 
     if (limit && items.length >= limit) {
       return items.slice(0, limit);

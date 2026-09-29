@@ -98,12 +98,16 @@ your followers **as the same device** (same ids, app version and user agent), so
 Instagram sees one phone, not a login from one device followed by calls from
 another.
 
-When Instagram asks for a verification code (sent by email or SMS) or your
+Progress shows as it goes (the first run also sets up instagrapi). When
+Instagram asks for a verification code (sent by email or SMS) or your
 two-factor code, you're prompted for it in the terminal:
 
 ```
-🔐 Instagram sent a verification code (email). Enter it: 123456
-🔐 Two-factor authentication is enabled. Enter the 2FA code: 123456
+✔ instagrapi 3.0.15 installed in ~/.insta-who-unfollowed-me/python
+🔐 Instagram sent a verification code by email.
+✔ Enter the code: … 123456
+✔ Logged in as your@email.com
+⠹ Fetching your followers… 1200
 ```
 
 If a checkpoint keeps firing, log in to Instagram once from your browser, confirm
