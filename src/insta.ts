@@ -35,6 +35,95 @@ export interface GetUnfollowersOptions {
   onTwoFactor?: TwoFactorHandler;
   /** Emit diagnostic details (e.g. the challenge step) to stderr. */
   verbose?: boolean;
+  /**
+   * A logged-in `sessionid` cookie copied from instagram.com. When set, the
+   * password login is skipped entirely and this session is used as-is.
+   */
+  sessionId?: string;
+}
+
+/** A browser session, normalized to the form the mobile API expects. */
+export interface BrowserSession {
+  /** The cookie value, URL-encoded as browsers store it (`123%3Aabc%3A…`). */
+  sessionId: string;
+  /** The account's numeric id — the part before the first colon. */
+  userId: string;
+}
+
+/**
+ * Parse a `sessionid` cookie pasted by the user. Accepts it as devtools shows it
+ * (URL-encoded), decoded (plain colons), quoted, or with a `sessionid=` prefix.
+ *
+ * @throws {InstagramError} INVALID_CREDENTIALS when it doesn't look like a session.
+ */
+export function parseSessionId(raw: string): BrowserSession {
+  const value = raw
+    .trim()
+    .replace(/;+$/, '')
+    .replace(/^sessionid=/i, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
+  let decoded = value;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    // Not valid percent-encoding: validate it as-is below.
+  }
+
+  const match = /^(\d+):/.exec(decoded);
+  if (!match || decoded.length < 30) {
+    throw new InstagramError(
+      'That does not look like an Instagram sessionid cookie. It should start with ' +
+        'your numeric user id, e.g. "123456789%3AAbC…". See "Log in with a browser ' +
+        'session" in the README.',
+      InstagramErrorType.INVALID_CREDENTIALS,
+    );
+  }
+  return { sessionId: decoded.replace(/:/g, '%3A'), userId: match[1] };
+}
+
+/**
+ * The `Authorization` header the Android app sends once logged in
+ * (`Bearer IGT:2:<base64 JSON>`), built from a browser session. Mirrors
+ * instagrapi's `login_by_sessionid`.
+ */
+export function sessionAuthorization(session: BrowserSession): string {
+  const payload = JSON.stringify({
+    ds_user_id: session.userId,
+    sessionid: session.sessionId,
+    should_use_header_over_cookies: true,
+  });
+  return `Bearer IGT:2:${Buffer.from(payload).toString('base64')}`;
+}
+
+/**
+ * Whether a login was refused with `needs_upgrade` ("Your version of Instagram
+ * is out of date"). Since September 2026 Instagram answers password logins on
+ * the legacy `accounts/login/` endpoint this way whatever app version is
+ * announced: the Android app now logs in through a Bloks/CAA flow that
+ * instagram-private-api does not implement. Retrying cannot help.
+ */
+export function isNeedsUpgrade(error: unknown): error is IgResponseError {
+  if (!(error instanceof IgResponseError)) return false;
+  const body = error.response?.body as
+    | { error_type?: string; message?: string }
+    | undefined;
+  return (
+    body?.error_type === 'needs_upgrade' ||
+    /out of date/i.test(body?.message ?? '')
+  );
+}
+
+/**
+ * Whether Instagram refused the current session on an API call: the library's
+ * `login_required` error, or a bare 401 ("Please wait a few minutes before you
+ * try again"), which is what a stale saved session gets.
+ */
+export function isSessionRejected(error: unknown): boolean {
+  return (
+    error instanceof IgLoginRequiredError ||
+    (error instanceof IgResponseError && error.response?.statusCode === 401)
+  );
 }
 
 /** Instagram challenge steps that can be satisfied by submitting a security code. */
@@ -62,12 +151,12 @@ function checkpointUrl(ig: IgApiClient): string | undefined {
  * current values instead, and let every field be overridden from the env when
  * they eventually go stale (refresh from instagrapi's config.py or APKMirror).
  *
- * @see https://github.com/subzeroid/instagrapi/blob/master/instagrapi/config.py
+ * @see https://github.com/subzeroid/instagrapi/blob/3.0.15/instagrapi/config.py
  */
-const DEFAULT_APP_VERSION = '428.0.0.47.67';
-const DEFAULT_APP_VERSION_CODE = '961145276';
+const DEFAULT_APP_VERSION = '448.0.0.0.20';
+const DEFAULT_APP_VERSION_CODE = '1065560286';
 const DEFAULT_BLOKS_VERSION_ID =
-  '7189b949425f9bf80ea8bd880cf5a3080b292d9b1c4b38a18d112f7c4b71e7a8';
+  '0bc46a03e177bfc9bc8d611918815acf248fa9c77754d807d6a5951dc9ce9432';
 // android_version/android_release; dpi; resolution; manufacturer; model; device; cpu
 const DEFAULT_DEVICE =
   '34/14; 480dpi; 1344x2992; Google/google; Pixel 8 Pro; husky; husky';
@@ -187,13 +276,20 @@ export async function getUnfollowers(
     onChallenge,
     onTwoFactor,
     verbose = false,
+    sessionId,
   } = options;
 
+  const session = sessionId ? parseSessionId(sessionId) : undefined;
+
   const ig = new IgApiClient();
-  ig.state.generateDevice(email);
+  ig.state.generateDevice(email || session?.userId || '');
   // Replace the library's outdated bundled app version (Instagram rejects it as
   // `unsupported_version`) with whatever the env supplies.
   const appVersion = applyClientVersionOverrides(ig, verbose);
+
+  if (session) {
+    return getUnfollowersWithSession(ig, session, limit, verbose);
+  }
 
   try {
     const restored = await restoreSession(ig, email);
@@ -213,7 +309,7 @@ export async function getUnfollowers(
     try {
       data = await fetchFollowData(ig, limit);
     } catch (error) {
-      if (restored && error instanceof IgLoginRequiredError) {
+      if (restored && isSessionRejected(error)) {
         // The persisted session has expired — drop it and log in fresh.
         if (verbose)
           console.error('   🔎 Saved session expired; logging in fresh.');
@@ -296,6 +392,56 @@ export async function getUnfollowers(
             "it's you in a browser (link below, or just open instagram.com), wait a " +
             'while, then re-run.',
           url,
+        ),
+        InstagramErrorType.CHALLENGE_REQUIRED,
+      );
+    }
+    if (isNeedsUpgrade(error)) {
+      throw new InstagramError(
+        'Instagram refused the password login ("Your version of Instagram is out of ' +
+          'date"). Instagram moved app logins to a new flow the underlying library ' +
+          'does not support, so retrying or changing INSTA_APP_VERSION will not help.\n' +
+          '   Log in on instagram.com in your browser, copy the "sessionid" cookie and ' +
+          're-run with INSTA_SESSIONID set (see "Log in with a browser session" in the README).',
+        InstagramErrorType.CHALLENGE_REQUIRED,
+      );
+    }
+    throw InstagramError.fromError(error);
+  }
+}
+
+/**
+ * Fetch unfollowers with a browser session instead of a password login. The
+ * session is never persisted: the cookie itself is what the user keeps.
+ */
+async function getUnfollowersWithSession(
+  ig: IgApiClient,
+  session: BrowserSession,
+  limit: number | undefined,
+  verbose: boolean,
+): Promise<UnfollowerResult> {
+  ig.state.authorization = sessionAuthorization(session);
+  if (verbose) {
+    console.error(`   🔎 Using browser session for user id ${session.userId}.`);
+  }
+  try {
+    const data = await fetchFollowData(ig, limit);
+    return computeResult(data.followers, data.following);
+  } catch (error) {
+    if (isSessionRejected(error)) {
+      throw new InstagramError(
+        'Instagram rejected the sessionid (expired, logged out, or copied incorrectly). ' +
+          'Log in again on instagram.com and copy a fresh "sessionid" cookie.',
+        InstagramErrorType.INVALID_CREDENTIALS,
+        { originalError: error instanceof Error ? error.message : error },
+      );
+    }
+    if (isCheckpointRequired(error)) {
+      throw new InstagramError(
+        withManualLink(
+          'Instagram returned a "checkpoint_required" block. Confirm it\'s you on ' +
+            'instagram.com, wait a while, then re-run.',
+          extractCheckpointUrl(error.response?.body),
         ),
         InstagramErrorType.CHALLENGE_REQUIRED,
       );

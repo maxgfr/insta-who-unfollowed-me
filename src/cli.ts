@@ -127,12 +127,14 @@ async function promptTwoFactorCode(source: string): Promise<string> {
 function getCredentials(options: CliOptions): {
   email: string;
   password: string;
+  sessionId: string;
 } {
   // Priority: CLI args > Environment variables > Interactive prompt
   const email = options.email || process.env.INSTA_EMAIL || '';
   const password = options.password || process.env.INSTA_PASSWORD || '';
+  const sessionId = options.sessionid || process.env.INSTA_SESSIONID || '';
 
-  return { email, password };
+  return { email, password, sessionId };
 }
 
 function sortUnfollowers(
@@ -274,13 +276,13 @@ async function processUserInformations(options: CliOptions) {
   // Initialize colors based on options
   initColors(options.noColor === false);
 
-  const { email, password } = getCredentials(options);
+  const { email, password, sessionId } = getCredentials(options);
 
-  // Prompt for missing credentials
+  // Prompt for missing credentials (a browser session replaces them entirely)
   let finalEmail = email;
   let finalPassword = password;
 
-  if (!finalEmail || !finalPassword) {
+  if (!sessionId && (!finalEmail || !finalPassword)) {
     const input = getInteractiveInput();
 
     // Never echo a password in clear text: refuse to prompt when masking is
@@ -304,16 +306,18 @@ async function processUserInformations(options: CliOptions) {
     }
   }
 
-  if (!finalEmail || !finalPassword) {
+  if (!sessionId && (!finalEmail || !finalPassword)) {
     console.error(
-      `${color.red('❌')} Missing credentials. Please provide email and password.`,
+      `${color.red('❌')} Missing credentials. Please provide email and password, or a sessionid.`,
     );
     process.exit(1);
   }
 
   if (options.verbose) {
     console.log(
-      `${color.blue('🔍')} Checking unfollowers for: ${color.bright(finalEmail)}`,
+      `${color.blue('🔍')} Checking unfollowers for: ${color.bright(
+        sessionId ? 'browser session (sessionid)' : finalEmail,
+      )}`,
     );
   }
 
@@ -328,6 +332,7 @@ async function processUserInformations(options: CliOptions) {
         onChallenge: promptChallengeCode,
         onTwoFactor: promptTwoFactorCode,
         verbose: options.verbose,
+        sessionId: sessionId || undefined,
       });
       break;
     } catch (error) {
@@ -337,9 +342,13 @@ async function processUserInformations(options: CliOptions) {
       console.error(`\n${color.red('❌')} Error: ${instaError.message}`);
       console.error(`   Type: ${color.dim(instaError.type)}`);
 
-      if (instaError.type === InstagramErrorType.CHALLENGE_REQUIRED) {
+      if (
+        instaError.type === InstagramErrorType.CHALLENGE_REQUIRED ||
+        instaError.type === InstagramErrorType.INVALID_CREDENTIALS
+      ) {
         // The error message already carries specific guidance (and a browser
         // link when Instagram provided one); don't pile on a generic note.
+        // Retrying either only adds failed logins, which gets accounts flagged.
         process.exit(1);
       }
 
@@ -380,6 +389,10 @@ export async function runCommand() {
     .description('Utility to make it easy to track unfollowers on Instagram')
     .option('-e, --email <email>', 'Instagram email')
     .option('-p, --password <password>', 'Instagram password')
+    .option(
+      '--sessionid <sessionid>',
+      'Log in with the "sessionid" cookie from instagram.com instead of a password',
+    )
     .option(
       '-f, --format <format>',
       'Output format (text, json, or csv)',

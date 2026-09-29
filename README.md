@@ -56,6 +56,32 @@ export INSTA_PASSWORD="yourpassword"
 insta-who-unfollowed-me
 ```
 
+### Log in with a browser session
+
+Since September 2026 Instagram refuses password logins from this tool with
+`Your version of Instagram is out of date`: the Android app now logs in through a
+new flow that the underlying `instagram-private-api` library doesn't implement.
+Changing `INSTA_APP_VERSION` does not help.
+
+Use the session of your browser instead. No password is sent, and two-factor
+authentication is already done:
+
+1. Log in on [instagram.com](https://www.instagram.com) in your browser.
+2. Open the developer tools → **Application** (Chrome) or **Storage** (Firefox/Safari)
+   → **Cookies** → `https://www.instagram.com`.
+3. Copy the value of the `sessionid` cookie (it starts with your numeric user id,
+   e.g. `123456789%3AAbC…`).
+4. Run:
+
+```bash
+export INSTA_SESSIONID="123456789%3AAbC..."
+insta-who-unfollowed-me
+```
+
+`--sessionid <value>` works too, but it leaves the cookie in your shell history.
+Treat the cookie like a password: anyone holding it is logged in as you. It
+stays valid until you log out of that browser session.
+
 ### Login Sessions & Challenges
 
 On the first successful login, your authenticated session is cached to
@@ -100,6 +126,7 @@ re-run.
 | `--email <email>` | `-e` | Instagram email | Prompt |
 | `--username <email>` | `-u` | Instagram email (deprecated: use `--email`) | Prompt |
 | `--password <password>` | `-p` | Instagram password | Prompt |
+| `--sessionid <sessionid>` | - | `sessionid` cookie from instagram.com, replaces email/password (env: `INSTA_SESSIONID`) | - |
 | `--format <format>` | `-f` | Output format (text, json, or csv) | `text` |
 | `--output <file>` | `-o` | Save results to file | - |
 | `--stats` | `-s` | Show detailed statistics | `false` |
@@ -324,8 +351,8 @@ current values from
 or [APKMirror](https://www.apkmirror.com/apk/instagram/instagram-instagram/):
 
 ```bash
-export INSTA_APP_VERSION="428.0.0.47.67"          # version name
-export INSTA_APP_VERSION_CODE="961145276"          # its numeric version code
+export INSTA_APP_VERSION="448.0.0.0.20"           # version name
+export INSTA_APP_VERSION_CODE="1065560286"         # its numeric version code
 export INSTA_BLOKS_VERSION_ID="<current bloks version id>"
 # android_version/release; dpi; resolution; manufacturer; model; device; cpu
 export INSTA_DEVICE="34/14; 480dpi; 1344x2992; Google/google; Pixel 8 Pro; husky; husky"

@@ -11,18 +11,25 @@ import {
   extractCheckpointUrl,
   applyClientVersionOverrides,
   resolveTwoFactor,
+  parseSessionId,
+  sessionAuthorization,
+  isNeedsUpgrade,
+  isSessionRejected,
 } from './insta';
 import { InstagramError, InstagramErrorType } from './types';
 
 /** Build a real IgResponseError with the given JSON body. */
-function responseError(body: Record<string, unknown>): IgResponseError {
+function responseError(
+  body: Record<string, unknown>,
+  statusCode = 400,
+): IgResponseError {
   return new IgResponseError({
     request: {
       method: 'GET',
       uri: { path: '/api/v1/friendships/1/followers/' },
     },
-    statusCode: 400,
-    statusMessage: 'Bad Request',
+    statusCode,
+    statusMessage: statusCode === 401 ? 'Unauthorized' : 'Bad Request',
     body,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
@@ -268,6 +275,110 @@ describe('resolveTwoFactor', () => {
   });
 });
 
+describe('parseSessionId', () => {
+  const ENCODED = '247816798%3AAbCdEfGhIjKlMn%3A12%3AAYdQx-some-long-tail';
+
+  it('accepts the cookie value exactly as a browser shows it', () => {
+    expect(parseSessionId(ENCODED)).toEqual({
+      sessionId: ENCODED,
+      userId: '247816798',
+    });
+  });
+
+  it('re-encodes a decoded value (colons) to the cookie form', () => {
+    expect(parseSessionId(decodeURIComponent(ENCODED)).sessionId).toBe(
+      ENCODED,
+    );
+  });
+
+  it('tolerates surrounding whitespace, quotes and a "sessionid=" prefix', () => {
+    expect(parseSessionId(`  sessionid="${ENCODED}";  `).sessionId).toBe(
+      ENCODED,
+    );
+  });
+
+  it.each(['', 'not-a-session', 'abc%3Adef%3A12%3Asomething-long-enough-here'])(
+    'rejects %p as INVALID_CREDENTIALS',
+    (raw) => {
+      expect(() => parseSessionId(raw)).toThrow(
+        expect.objectContaining({
+          type: InstagramErrorType.INVALID_CREDENTIALS,
+        }),
+      );
+    },
+  );
+});
+
+describe('sessionAuthorization', () => {
+  it('builds the mobile IGT:2 bearer header carrying the session', () => {
+    const header = sessionAuthorization({
+      sessionId: '1%3Aabc',
+      userId: '1',
+    });
+    expect(header.startsWith('Bearer IGT:2:')).toBe(true);
+    const payload = JSON.parse(
+      Buffer.from(header.slice('Bearer IGT:2:'.length), 'base64').toString(),
+    );
+    expect(payload).toEqual({
+      ds_user_id: '1',
+      sessionid: '1%3Aabc',
+      should_use_header_over_cookies: true,
+    });
+  });
+
+  it('is understood by the client (cookieUserId resolves from it)', () => {
+    const ig = new IgApiClient();
+    ig.state.authorization = sessionAuthorization({
+      sessionId: '42%3Aabc',
+      userId: '42',
+    });
+    expect(ig.state.cookieUserId).toBe('42');
+  });
+});
+
+describe('isNeedsUpgrade', () => {
+  it('detects the needs_upgrade error_type', () => {
+    expect(isNeedsUpgrade(responseError({ error_type: 'needs_upgrade' }))).toBe(
+      true,
+    );
+  });
+
+  it('detects the "out of date" message', () => {
+    expect(
+      isNeedsUpgrade(
+        responseError({
+          message:
+            'Your version of Instagram is out of date. Please upgrade your app to log in to Instagram.',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('ignores other response errors and plain errors', () => {
+    expect(isNeedsUpgrade(responseError({ message: 'bad_password' }))).toBe(
+      false,
+    );
+    expect(isNeedsUpgrade(new Error('out of date'))).toBe(false);
+  });
+});
+
+describe('isSessionRejected', () => {
+  it('treats a 401 on an API call as a rejected session', () => {
+    expect(
+      isSessionRejected(
+        responseError(
+          { message: 'Please wait a few minutes before you try again.' },
+          401,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('ignores non-401 response errors', () => {
+    expect(isSessionRejected(responseError({ message: 'fail' }))).toBe(false);
+  });
+});
+
 describe('applyClientVersionOverrides', () => {
   const VERSION_KEYS = [
     'INSTA_APP_VERSION',
@@ -313,10 +424,10 @@ describe('applyClientVersionOverrides', () => {
 
   it('defaults to a current (instagrapi) version and modern device', () => {
     const ig = newClient();
-    expect(applyClientVersionOverrides(ig)).toBe('428.0.0.47.67');
+    expect(applyClientVersionOverrides(ig)).toBe('448.0.0.0.20');
     // Replaces the library's stale Android 6–8 device with a modern one.
     expect(ig.state.deviceString).toContain('Pixel 8 Pro');
-    expect(ig.state.appUserAgent).toContain('428.0.0.47.67');
+    expect(ig.state.appUserAgent).toContain('448.0.0.0.20');
     expect(ig.state.appUserAgent).toContain('Pixel 8 Pro');
   });
 

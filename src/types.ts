@@ -188,6 +188,7 @@ export type TwoFactorHandler = (source: string) => Promise<string>;
 export interface CliOptions {
   email?: string;
   password?: string;
+  sessionid?: string;
   format?: 'text' | 'json' | 'csv';
   output?: string;
   stats?: boolean;
